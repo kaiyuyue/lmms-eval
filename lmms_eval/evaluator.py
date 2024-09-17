@@ -6,13 +6,11 @@ import os
 import random
 import sys
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import List, Optional, Union
 
 import numpy as np
 import torch
-import torch.distributed as dist
 from datasets import Image, Sequence
 from loguru import logger as eval_logger
 from tqdm import tqdm
@@ -20,6 +18,7 @@ from tqdm import tqdm
 import lmms_eval.api
 import lmms_eval.api.metrics
 import lmms_eval.api.registry
+from lmms_eval.api.model import lmms as LMMS
 from lmms_eval.evaluator_utils import (
     consolidate_group_results,
     consolidate_results,
@@ -44,6 +43,12 @@ from lmms_eval.utils import (
     run_task_tests,
     simple_parse_args_string,
 )
+
+
+"""
+Disabel accelerator for now, as we don't use it.
+"""
+DISABLE_ACCELERATOR = bool(1)
 
 
 @positional_deprecated
@@ -76,7 +81,6 @@ def simple_evaluate(
     numpy_random_seed: int = 1234,
     torch_random_seed: int = 1234,
     fewshot_random_seed: int = 1234,
-    datetime_str: str = get_datetime_str(),
     cli_args=None,
 ):
     """Instantiate and evaluate a model on a list of tasks.
@@ -165,14 +169,19 @@ def simple_evaluate(
     if model_args is None:
         model_args = ""
 
-    ModelClass = get_model(model)
-    lm = ModelClass.create_from_arg_string(
-        model_args,
-        {
-            "batch_size": batch_size,
-            "device": device,
-        },
-    )
+    if isinstance(model, str):
+        ModelClass = get_model(model)
+        lm = ModelClass.create_from_arg_string(
+            model_args,
+            {
+                "batch_size": batch_size,
+                "device": device,
+            },
+        )
+    elif isinstance(model, LMMS):
+        lm = model
+    else:
+        raise NotImplementedError(f"Model type {type(model)} not supported.")
 
     if task_manager is None:
         task_manager = TaskManager(verbosity, model_name=model)
@@ -256,10 +265,6 @@ def simple_evaluate(
         cli_args=cli_args,
     )
 
-    if hasattr(lm, "_model"):
-        del lm._model
-        torch.cuda.empty_cache()
-
     if lm.rank == 0:
         if isinstance(model, str):
             model_name = model
@@ -293,7 +298,7 @@ def simple_evaluate(
             }
         )
         results["git_hash"] = get_git_commit_hash()
-        results["date"] = datetime_str
+        results["date"] = get_datetime_str()
         # add_env_info(results)  # additional environment info to results
         # add_tokenizer_info(results, lm)  # additional info about tokenizer
         return results
@@ -414,15 +419,15 @@ def evaluate(
             limit=limit,
             rank=lm.rank,
             world_size=lm.world_size,
-            cache_requests=cache_requests,  # later we will add them
-            rewrite_requests_cache=rewrite_requests_cache,
-            system_instruction=system_instruction,
-            apply_chat_template=apply_chat_template,
-            fewshot_as_multiturn=fewshot_as_multiturn,
-            chat_template=getattr(lm, "apply_chat_template") if apply_chat_template else None,
-            tokenizer_name=getattr(lm, "tokenizer_name", "") if apply_chat_template else "",
+            # cache_requests=cache_requests, # later we will add them
+            # rewrite_requests_cache=rewrite_requests_cache,
+            # system_instruction=system_instruction,
+            # apply_chat_template=apply_chat_template,
+            # fewshot_as_multiturn=fewshot_as_multiturn,
+            # chat_template=getattr(lm, "apply_chat_template") if apply_chat_template else None,
+            # tokenizer_name=getattr(lm, "tokenizer_name", "") if apply_chat_template else "",
         )
-        eval_logger.debug(f"Task: {task_output.task_name}; number of requests on this rank: {len(task._instances)}")
+        eval_logger.debug(f"Task: {task_output.task_name}; number of requests on this rank: {len(task.instances)}")
         if write_out:
             print_writeout(task)
         # aggregate Instances by LM method requested to get output.
@@ -430,7 +435,7 @@ def evaluate(
             reqtype = instance.request_type
             requests[reqtype].append(instance)
 
-        if lm.world_size > 1:
+        if lm.world_size > 1 and not DISABLE_ACCELERATOR:
             instances_rnk = torch.tensor(len(task._instances), device=lm.device)
             gathered_item = lm.accelerator.gather(instances_rnk).cpu().detach().numpy().tolist()
             # "multiple_choice" task types dispatch (several) "loglikelihood" request types
@@ -460,7 +465,7 @@ def evaluate(
         for x, req in zip(resps, cloned_reqs):
             req.resps.append(x)
 
-        if lm.world_size > 1:
+        if lm.world_size > 1 and not DISABLE_ACCELERATOR:
             lm.accelerator.wait_for_everyone()
 
     RANK = lm.rank
@@ -484,9 +489,6 @@ def evaluate(
         # iterate over different filters used
         for filter_key in task.instances[0].filtered_resps.keys():
             doc_iterator = task.doc_iterator(rank=RANK, limit=limit, world_size=WORLD_SIZE)
-            doc_iterator_for_counting = itertools.islice(range(len(task.test_docs())), RANK, limit, WORLD_SIZE) if task.has_test_docs() else itertools.islice(range(len(task.validation_docs())), RANK, limit, WORLD_SIZE)
-            total_docs = sum(1 for _ in doc_iterator_for_counting)
-            pbar = tqdm(total=total_docs, desc=f"Postprocessing", disable=(RANK != 0))
             for doc_id, doc in doc_iterator:
                 requests = instances_by_doc_id[doc_id]
                 metrics = task.process_results(doc, [req.filtered_resps[filter_key] for req in requests])
@@ -524,9 +526,6 @@ def evaluate(
                     task_output.logged_samples.append(example)
                 for metric, value in metrics.items():
                     task_output.sample_metrics[(metric, filter_key)].append(value)
-                pbar.update(1)
-
-            pbar.close()
 
     if WORLD_SIZE > 1:
         # if multigpu, then gather data across all ranks to rank 0
@@ -558,8 +557,6 @@ def evaluate(
                 )
                 if RANK == 0:
                     task_output.sample_metrics[metrics] = list(itertools.chain.from_iterable(metric_list))
-
-        dist.barrier()  # Ensure all processes are synced before proceeding
 
     if RANK == 0:
         ### Aggregate results over all datapoints ###
@@ -622,7 +619,7 @@ def evaluate(
     else:
         results_dict = None
 
-    if hasattr(lm, "accelerator"):
+    if hasattr(lm, "accelerator") and not DISABLE_ACCELERATOR:
         lm.accelerator.wait_for_everyone()
 
     return results_dict
