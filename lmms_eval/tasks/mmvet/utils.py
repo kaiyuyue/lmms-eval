@@ -7,6 +7,9 @@ import requests
 import yaml
 from loguru import logger as eval_logger
 
+from openai import OpenAI
+client = OpenAI()
+
 with open(Path(__file__).parent / "mmvet.yaml", "r") as f:
     raw_data = f.readlines()
     safe_data = []
@@ -33,7 +36,8 @@ Can you explain this meme? | This meme is poking fun at the fact that the names 
 """
 
 
-def get_chat_response(prompt, model=GPT_EVAL_MODEL_NAME, temperature=0.0, max_tokens=128, patience=3, sleep_time=5):
+def get_chat_response(prompt, model=GPT_EVAL_MODEL_NAME, temperature=0.0, max_tokens=128, patience=5, sleep_time=30):
+    
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
@@ -50,28 +54,42 @@ def get_chat_response(prompt, model=GPT_EVAL_MODEL_NAME, temperature=0.0, max_to
         "max_tokens": max_tokens,
     }
 
-    while patience > 0:
-        patience -= 1
-        try:
-            response = requests.post(
-                API_URL,
-                headers=headers,
-                json=payload,
-                timeout=60,
-            )
-            response.raise_for_status()
-            response_data = response.json()
+    # while patience > 0:
+    #     patience -= 1
+    #     try:
+    #         # response = requests.post(
+    #         #     API_URL,
+    #         #     headers=headers,
+    #         #     json=payload,
+    #         #     timeout=60,
+    #         # )
+    #         # response.raise_for_status()
+    #         # response_data = response.json()
+    #         # content = response_data["choices"][0]["message"]["content"].strip()
+    #         
+    #         # use openai client instead            
+    #         time.sleep(30)  # sleep 30s before call  
+    #         completion = client.chat.completions.create(
+    #             model=model,
+    #             messages=messages,
+    #             temperature=temperature,
+    #             max_tokens=max_tokens,
+    #         )
+    #         """
+    #         ChatCompletion(id='chatcmpl-AILwiwknzvUeur4nh6wD8ukrZggsd', choices=[Choice(finish_reason='stop', index=0, logprobs=None, message=ChatCompletionMessage(content="As an artificial intelligence, I don't do activities like humans do. I'm here to assist you. How can I help you today?", refusal=None, role='assistant', function_call=None, tool_calls=None))], created=1728937628, model='gpt-4-0613', object='chat.completion', service_tier=None, system_fingerprint=None, usage=CompletionUsage(completion_tokens=28, prompt_tokens=15, total_tokens=43, completion_tokens_details=CompletionTokensDetails(reasoning_tokens=0), prompt_tokens_details={'cached_tokens': 0}))
+    #         """
+    #         content = completion.choices[0].message.content.strip()
+    #         return_model = completion.model.strip()
 
-            content = response_data["choices"][0]["message"]["content"].strip()
-            if content != "":
-                return content, response_data["model"]
+    #         if content != "":
+    #             return content, return_model
 
-        except Exception as e:
-            eval_logger.error(f"Error: {e}")
-            if "Rate limit" in str(e):
-                eval_logger.info("Sleeping due to rate limit...")
-                time.sleep(sleep_time)
-            eval_logger.info(f"Retrying...Patience left: {patience}")
+    #     except Exception as e:
+    #         eval_logger.error(f"Error: {e}")
+    #         if "Rate limit" in str(e):
+    #             eval_logger.log("Sleeping due to rate limit...")
+    #             time.sleep(sleep_time)
+    #         eval_logger.log(f"Retrying... Patience left: {patience}")
 
     return "", ""
 
@@ -202,6 +220,7 @@ def mmvet_aggregate_results(results):
     return overall_score
 
 
+
 def doc_to_text(doc, lmms_eval_specific_kwargs=None):
     if lmms_eval_specific_kwargs is None:
         return doc["question"]
@@ -210,3 +229,16 @@ def doc_to_text(doc, lmms_eval_specific_kwargs=None):
     post_prompt = lmms_eval_specific_kwargs.get("post_prompt", "")
 
     return f"{pre_prompt}{question}{post_prompt}"
+
+
+def mmvet_save_results_for_submission(doc, results):
+    """
+    submit at [https://huggingface.co/spaces/whyu/MM-Vet_Evaluator]
+    """
+    pred = results[0] 
+
+    return
+
+
+if __name__ == '__main__':
+    print(get_chat_response('Hello! What are you doing now?', model='gpt-4-0613'))
