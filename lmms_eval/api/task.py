@@ -429,7 +429,8 @@ class Task(abc.ABC):
         # process all documents when caching is specified for simplicity
         if cache_requests and (not cached_instances or rewrite_requests_cache) and limit is not None:
             limit = None
-
+        
+        print('building doc_id_docs ...')
         doc_id_docs = list(self.doc_iterator(rank=rank, limit=limit, world_size=world_size))
 
         num_docs = len(doc_id_docs)
@@ -659,6 +660,7 @@ class Task(abc.ABC):
 
     def doc_iterator(self, *, rank: int = 0, limit: Union[int, None] = None, world_size: int = 1) -> Iterator[Tuple[int, Any]]:
         limit = int(limit) if limit else None
+        print(f'doc_iterator len: {len(self.eval_docs)}')
         doc_iterator = utils.create_iterator(
             enumerate(self.eval_docs),
             rank=int(rank),

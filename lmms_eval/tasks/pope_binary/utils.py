@@ -9,8 +9,7 @@ def pope_doc_to_visual(doc):
 def pope_doc_to_text(doc):
     # Assuming the 'doc' dictionary has a key 'question' with the question text
     question = doc["question"].strip()
-    return f"{question}\nAnswer the question using a single word or phrase."
-    # return f"{question}\nAnswer the question with Yes or No."
+    return f"{question}\nAnswer the question with Yes or No."
 
 
 def pope_process_results(doc, results):

@@ -36,12 +36,13 @@ def seed_aggregation_result(results):
 
 def seed_aggregation_result_all(results):
     score = seed_aggregation_result(results)
+    print(score)
     stored_results = []
     for result in results:
         stored_results.append({"question_id": result["question_id"], "prediction": result["pred"]})
-    with open("./seed_submission.json", "w") as f:
-        json.dump(stored_results, f, indent=4)
-    print("Storing files for seed_submission ...")
+    # with open("./seed_submission.json", "w") as f:
+    #     json.dump(stored_results, f, indent=4)
+    # print("Storing files for seed_submission ...")
 
     return score
 
