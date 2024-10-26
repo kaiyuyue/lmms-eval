@@ -1,21 +1,15 @@
 import collections
-import inspect
 import itertools
 import json
-import os
 import random
-import sys
-import time
-from dataclasses import dataclass
 from typing import List, Optional, Union
 
 import numpy as np
 import torch
-from datasets import Image, Sequence
-from loguru import logger as eval_logger
-from tqdm import tqdm
+import torch.distributed as dist
 
-import lmms_eval.api
+from loguru import logger as eval_logger
+
 import lmms_eval.api.metrics
 import lmms_eval.api.registry
 from lmms_eval.api.model import lmms as LMMS
@@ -33,12 +27,10 @@ from lmms_eval.loggers.evaluation_tracker import EvaluationTracker
 from lmms_eval.models import get_model
 from lmms_eval.tasks import TaskManager, get_task_dict
 from lmms_eval.utils import (
-    create_iterator,
     get_datetime_str,
     get_git_commit_hash,
     handle_non_serializable,
     hash_string,
-    make_table,
     positional_deprecated,
     run_task_tests,
     simple_parse_args_string,
@@ -435,9 +427,15 @@ def evaluate(
             reqtype = instance.request_type
             requests[reqtype].append(instance)
 
-        if lm.world_size > 1 and not DISABLE_ACCELERATOR:
+        if lm.world_size > 1:
             instances_rnk = torch.tensor(len(task._instances), device=lm.device)
-            gathered_item = lm.accelerator.gather(instances_rnk).cpu().detach().numpy().tolist()
+            if not DISABLE_ACCELERATOR:
+                gathered_item = lm.accelerator.gather(instances_rnk).cpu().detach().numpy().tolist()
+            else:
+                gathered_item = [torch.zeros_like(instances_rnk)] * lm.world_size
+                dist.all_gather(gathered_item, instances_rnk)
+                gathered_item = [x.item() for x in gathered_item]
+
             # "multiple_choice" task types dispatch (several) "loglikelihood" request types
             reqtype = "loglikelihood" if task.OUTPUT_TYPE == "multiple_choice" else task.OUTPUT_TYPE
             # compute number of pseudo-batches to pad with (FSDP/DDP require even batches among ranks)
